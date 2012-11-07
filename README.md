@@ -20,6 +20,7 @@ You can collect field names with <code>gfields</code> function:
 <pre>
 testFields :: [String]
 testFields = fields (gfields :: Fields Test)
+-- ["testInt","testOptional","testString"]
 </pre>
 
 Example of usage:

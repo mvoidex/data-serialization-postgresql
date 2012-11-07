@@ -18,6 +18,7 @@
 -- 
 -- >testFields :: [String]
 -- >testFields = fields (gfields :: Fields Test)
+-- >-- ["testInt","testOptional","testString"]
 -- 
 -- Example of usage:
 -- 
