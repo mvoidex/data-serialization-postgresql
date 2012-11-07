@@ -103,7 +103,7 @@ instance Combine Fields where
 instance GenericCombine Fields
 
 instance Selector c => GenericSerializable Fields (Stor c a) where
-    gser = fix $ \r -> Fields (return $ storName $ dummy r) where
+    gser = fix $ Fields . return . storName . dummy where
         dummy :: Fields (Stor c a) -> Stor c a
         dummy _ = undefined
 
