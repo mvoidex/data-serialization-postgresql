@@ -18,6 +18,19 @@ instance InTable Test where
     table _ = "test"
 </pre>
 
+You can specify names for columns:
+
+<pre>
+instance Serializable Pgser Test where
+    ser =
+        dat_ (ctor_ (
+            stor "id" ser .*.
+            stor "opti" ser .*.
+            stor "teststr" ser))
+        .:.
+        giso
+</pre>
+
 Example:
 
 <pre>

@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, DeriveGeneric, MultiParamTypeClasses, FlexibleInstances, ConstraintKinds, FlexibleContexts, OverlappingInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, DeriveGeneric, MultiParamTypeClasses, FlexibleInstances, ConstraintKinds, FlexibleContexts, OverlappingInstances, UndecidableInstances #-}
 
 -- | This module defines serialization for postgres
 --
@@ -17,6 +17,17 @@
 -- >instance InTable Test where
 -- >    table _ = "test"
 -- 
+-- You can specify names for columns:
+--
+-- >instance Serializable Pgser Test where
+-- >    ser =
+-- >        dat_ (ctor_ (
+-- >            stor "id" ser .*.
+-- >            stor "opti" ser .*.
+-- >            stor "teststr" ser))
+-- >        .:.
+-- >        giso
+--
 -- Example:
 --
 -- >runCreate :: IO ()
@@ -72,6 +83,8 @@ module Data.Serialization.Postgresql (
     -- * Deserialize
     FromFields(..),
     decodeField, decodeOptField,
+    -- * Encode/decode
+    Pgser(..), fields,
     -- * Meta info
     module Data.Serialization.Postgresql.Types
     ) where
@@ -115,13 +128,13 @@ data Table a = Table
 --
 -- >create con (Table "test" :: Table Test)
 --
-create :: (InTable a, Serializable Fields a) => Connection -> Table a -> IO Int64
+create :: (InTable a, Serializable Pgser a) => Connection -> Table a -> IO Int64
 create con t = execute_ con $ fromString $ "create table " ++ table t ++ " (" ++ fs ++ ")" where
     fs = intercalate ", " $ map cat $ getFields (fieldsFor t)
     cat (nm, tp) = nm ++ " " ++ tp
 
 -- | Insert value into table
-insert :: (InTable a, Serializable (Encoding ToFields) a) => Connection -> a -> IO Int64
+insert :: (InTable a, Serializable Pgser a) => Connection -> a -> IO Int64
 insert con v = do
     x <- either (error . ("Data.Serialization.Postgresql.insert: unable to encode value: " ++)) (return . M.toList) $ encodeRow v
     execute con (fromString $ "insert into " ++ table (t v) ++ " (" ++ cols (map fst x) ++ ") values (" ++ qs x ++ ")") (map snd x) where
@@ -131,7 +144,7 @@ insert con v = do
         cols = intercalate ", "
 
 -- | Update value
-update :: (InTable a, Serializable (Encoding ToFields) a, ToRow q) => Connection -> a -> String -> q -> IO Int64
+update :: (InTable a, Serializable Pgser a, ToRow q) => Connection -> a -> String -> q -> IO Int64
 update con v condition args = do
     x <- either (error . ("Data.Serialization.Postgresql.update: unable to encode value: " ++)) (return . M.toList) $ encodeRow v
     execute con (fromString $ "update " ++ table (t v) ++ " set " ++ updates (map fst x) ++ condition) (map snd x ++ toRow args)
@@ -141,20 +154,20 @@ update con v condition args = do
         updates = intercalate ", " . map (++ " = ?")
 
 -- | Update value
-update_ :: (InTable a, Serializable (Encoding ToFields) a) => Connection -> a -> String -> IO Int64
+update_ :: (InTable a, Serializable Pgser a) => Connection -> a -> String -> IO Int64
 update_ con v condition = update con v condition ()
 
 -- | Select value from table
 -- select $ \t -> "select * from "
-select :: (InTable a, Serializable (Decoding FromFields) a, ToRow q) => Connection -> String -> q -> IO [a]
+select :: (InTable a, Serializable Pgser a, ToRow q) => Connection -> String -> q -> IO [a]
 select con condition args = selectFields con [] condition args
 
 -- | Select value from table
-select_ :: (InTable a, Serializable (Decoding FromFields) a) => Connection -> String -> IO [a]
+select_ :: (InTable a, Serializable Pgser a) => Connection -> String -> IO [a]
 select_ con condition = select con condition ()
 
 -- | Select fields from table
-selectFields :: (InTable a, Serializable (Decoding FromFields) a, ToRow q) => Connection -> [String] -> String -> q -> IO [a]
+selectFields :: (InTable a, Serializable Pgser a, ToRow q) => Connection -> [String] -> String -> q -> IO [a]
 selectFields con fs condition args = fix $ \r -> do
     ff <- query con (fromString $ "select " ++ fs' ++ " from " ++ table (t r) ++ condition) args
     either (error . ("Data.Serialization.Postgresql.select: unable to decode value: " ++)) return $ mapM (decodeRow . fieldsMap) ff
@@ -164,22 +177,22 @@ selectFields con fs condition args = fix $ \r -> do
         fs' = if null fs then "*" else intercalate ", " fs
 
 -- | Select fields from table
-selectFields_ :: (InTable a, Serializable (Decoding FromFields) a) => Connection -> [String] -> String -> IO [a]
+selectFields_ :: (InTable a, Serializable Pgser a) => Connection -> [String] -> String -> IO [a]
 selectFields_ con fs condition = selectFields con fs condition ()
 
-fieldsFor :: (Serializable Fields a) => Table a -> Fields a
+fieldsFor :: (Serializable Pgser a) => Table a -> Fields a
 fieldsFor _ = fields
 
 -- | Encode row
-encodeRow :: (Serializable (Encoding ToFields) a) => a -> Either String (M.Map String Action)
+encodeRow :: (Serializable Pgser a) => a -> Either String (M.Map String Action)
 encodeRow x = encode (ser' x) x where
-    ser' :: (Serializable (Encoding ToFields) a) => a -> Encoding ToFields a
+    ser' :: (Serializable Pgser a) => a -> Pgser a
     ser' _ = ser
 
 -- | Decode row
-decodeRow :: (Serializable (Decoding FromFields) a) => M.Map String AnyField -> Either String a
+decodeRow :: (Serializable Pgser a) => M.Map String AnyField -> Either String a
 decodeRow f = fix $ \r -> decode (ser' r) f where
-    ser' :: (Serializable (Decoding FromFields) a) => Either String a -> Decoding FromFields a
+    ser' :: (Serializable Pgser a) => Either String a -> Pgser a
     ser' _ = ser
 
 -- | Make @Map@ from field name to field
@@ -230,3 +243,34 @@ instance FromField a => Serializable (Decoding FromFields) a where
 
 instance FromField a => Serializable (Decoding FromFields) (OptField a) where
     ser = decodeOptField
+
+data Pgser a = Pgser {
+    pgEncoder :: Encoding ToFields a,
+    pgDecoder :: Decoding FromFields a,
+    pgFields :: Fields a }
+
+-- | Get type fields
+fields :: Serializable Pgser a => Fields a
+fields = pgFields ser
+
+instance (Combine (Encoding ToFields), Combine (Decoding FromFields)) => Combine Pgser where
+    ~(Pgser el dl fl) .*. ~(Pgser er dr fr) = Pgser (el .*. er) (dl .*. dr) (fl .*. fr)
+    ~(Pgser el dl fl) .+. ~(Pgser er dr fr) = Pgser (el .+. er) (dl .+. dr) (fl .+. fr)
+    ~(Pgser e d f) .:. iso = Pgser (e .:. iso) (d .:. iso) (f .:. iso)
+
+instance (GenericCombine (Encoding ToFields), GenericCombine (Decoding FromFields)) => GenericCombine Pgser where
+    genericData s ~(Pgser e d f) = Pgser (genericData s e) (genericData s d) (genericData s f)
+    genericCtor s ~(Pgser e d f) = Pgser (genericCtor s e) (genericCtor s d) (genericCtor s f)
+    genericStor s ~(Pgser e d f) = Pgser (genericStor s e) (genericStor s d) (genericStor s f)
+
+instance (ToField a, FromField a, ColumnType a) => Serializable Pgser a where
+    ser = Pgser encodeField decodeField ser
+
+instance (ToField a, FromField a, ColumnType (OptField a)) => Serializable Pgser (OptField a) where
+    ser = Pgser encodeOptField decodeOptField ser
+
+instance Encoder (M.Map String Action) Pgser where
+    encode (Pgser e _ _) = encode e
+
+instance Decoder (M.Map String AnyField) Pgser where
+    decode (Pgser _ d _) = decode d

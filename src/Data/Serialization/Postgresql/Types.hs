@@ -2,7 +2,7 @@
 
 module Data.Serialization.Postgresql.Types (
     ColumnType(..),
-    Fields(..), fields,
+    Fields(..),
     -- * Utiliity
     AnyField(..), OptField(..),
     fromAny, opt
@@ -86,18 +86,14 @@ instance Combine Fields where
     (Fields l) .+. (Fields r) = Fields (l ++ r)
     (Fields f) .:. _ = Fields f
 
-instance GenericCombine Fields
+instance GenericCombine Fields where
+    genericStor name (Fields (("", tp):fs)) = Fields $ (name, tp) : fs
+    genericStor _ _ = error "Impossible happened"
 
-instance (Selector c, ColumnType a) => GenericSerializable Fields (Stor c a) where
-    gser = fix $ \r -> Fields [(storName $ dummy r, columnType $ dummy' r)] where
-        dummy :: Fields (Stor c a) -> Stor c a
+instance ColumnType a => Serializable Fields a where
+    ser = fix $ \r -> Fields [("", columnType $ dummy r)] where
+        dummy :: Fields a -> a
         dummy _ = undefined
-        dummy' :: Fields (Stor c a) -> a
-        dummy' _ = undefined
-
--- | Get type fields
-fields :: Serializable Fields a => Fields a
-fields = ser
 
 -- | Represents any field
 data AnyField = AnyField {
