@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, DeriveGeneric, MultiParamTypeClasses, FlexibleInstances, DeriveFunctor, ConstraintKinds, FlexibleContexts, OverlappingInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, DeriveGeneric, MultiParamTypeClasses, FlexibleInstances, ConstraintKinds, FlexibleContexts, OverlappingInstances #-}
 
 -- | This module defines serialization for postgres
 --
@@ -13,118 +13,196 @@
 -- >
 -- >instance Serializable (Decoding FromFields) Test
 -- >instance Serializable (Encoding ToFields) Test
+-- >instance Serializable Fields Test
+-- >instance InTable Test where
+-- >    table _ = "test"
 -- 
--- You can collect field names with @gfields@ function:
--- 
--- >testFields :: [String]
--- >testFields = fields (gfields :: Fields Test)
--- >-- ["testInt","testOptional","testString"]
--- 
--- Example of usage:
--- 
--- >create :: IO ()
--- >create = do
+-- Example:
+--
+-- >runCreate :: IO ()
+-- >runCreate = do
 -- >    con <- connect testcon
--- >    execute_ con "create table test (id integer, value double precision, name text)"
+-- >    execute_ con "drop table test"
+-- >    create con (Table :: Table Test)
 -- >    return ()
 -- >
 -- >runInsert :: IO ()
 -- >runInsert = do
 -- >    con <- connect testcon
--- >    let
--- >        acts = either undefined id $ encodeRow (Test 123 Nothing (Has "Hello, world!"))
--- >    print acts
--- >    -- [Plain "123",Plain "null",Escape "Hello, world!"]
--- >    execute con "insert into test values (?, ?, ?)" acts
+-- >    insert con (Test 1 Nothing (Has "Hello, world!"))
+-- >    insert con (Test 2 (Just 10.0) (Has "Some string"))
+-- >    insert con (Test 3 Nothing HasNo)
+-- >    -- Test {testInt = 1, testOptional = Nothing, testString = Has "Hello, world!"}
+-- >    -- Test {testInt = 2, testOptional = Just 10.0, testString = Has "Some string"}
+-- >    -- Test {testInt = 3, testOptional = Nothing, testString = HasNo}
+-- >    return ()
+-- >
+-- >runUpdate :: IO ()
+-- >runUpdate = do
+-- >    con <- connect testcon
+-- >    -- @Nothing@ is for null, @HasNo@ is for no update
+-- >    update_ con (Test 1 (Just 20.0) HasNo) " where testint = 1"
+-- >    update_ con (Test 2 Nothing (Has "New string")) " where testint = 2"
+-- >    update_ con (Test 3 (Just 30.0) (HasNo)) " where testint = 3"
+-- >    -- Test {testInt = 1, testOptional = Just 20.0, testString = Has "Hello, world!"}
+-- >    -- Test {testInt = 2, testOptional = Nothing, testString = Has "New string"}
+-- >    -- Test {testInt = 3, testOptional = Just 30.0, testString = HasNo}
 -- >    return ()
 -- >
 -- >runSelect :: IO ()
 -- >runSelect = do
 -- >    con <- connect testcon
--- >    [ff] <- query_ con "select * from test limit 1"
--- >    print $ (decodeRow ff :: Either String Test)
--- >    -- Right (Test {testInt = 123, testOptional = Nothing, testString = Has "Hello, world!"})
+-- >    vs <- select_ con "" :: IO [Test]
+-- >    mapM_ print vs
 --
 module Data.Serialization.Postgresql (
+    -- * Queries
+    InTable(..), Table(..),
+    create,
+    insert,
+    update, update_,
+    select, select_,
+    selectFields, selectFields_,
     -- * Encode/decode row
     encodeRow, decodeRow,
-    -- * Meta info
-    Fields(..), gfields,
+    fieldsMap,
     -- * Serialize
     ToFields(..),
     encodeField, encodeOptField,
     -- * Deserialize
     FromFields(..),
     decodeField, decodeOptField,
-    -- * Utiliity
-    AnyField(..), OptField(..)
+    -- * Meta info
+    module Data.Serialization.Postgresql.Types
     ) where
 
+import Control.Arrow
 import Control.Applicative
 import Control.Monad.Error
 import Control.Monad.State
 import Control.Monad.Writer
 
-import Data.List
-import Data.Maybe (catMaybes)
+import Data.Char
+import Data.List (intercalate)
+import Data.Maybe (catMaybes, fromMaybe)
+import Data.String
+import Data.Int
 import Data.Function (fix)
-import Data.ByteString (ByteString)
+import qualified Data.Map as M
+import qualified Data.ByteString.Char8 as C8
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.FromField
 import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.ToRow
 import Database.PostgreSQL.Simple.Ok
 
 import GHC.Generics
 
+import Data.Serialization.Combinators (try)
 import Data.Serialization.Wrap
 import Data.Serialization.Generic
 import Data.Serialization.Codec
+import Data.Serialization.Dictionary
+
+import Data.Serialization.Postgresql.Types
+
+class InTable a where
+    table :: Table a -> String
+
+data Table a = Table
+
+-- | Create table
+--
+-- >create con (Table "test" :: Table Test)
+--
+create :: (InTable a, Serializable Fields a) => Connection -> Table a -> IO Int64
+create con t = execute_ con $ fromString $ "create table " ++ table t ++ " (" ++ fs ++ ")" where
+    fs = intercalate ", " $ map cat $ getFields (fieldsFor t)
+    cat (nm, tp) = nm ++ " " ++ tp
+
+-- | Insert value into table
+insert :: (InTable a, Serializable (Encoding ToFields) a) => Connection -> a -> IO Int64
+insert con v = do
+    x <- either (error . ("Data.Serialization.Postgresql.insert: unable to encode value: " ++)) (return . M.toList) $ encodeRow v
+    execute con (fromString $ "insert into " ++ table (t v) ++ " (" ++ cols (map fst x) ++ ") values (" ++ qs x ++ ")") (map snd x) where
+        t :: a -> Table a
+        t _ = Table
+        qs x' = intercalate ", " $ replicate (length x') "?"
+        cols = intercalate ", "
+
+-- | Update value
+update :: (InTable a, Serializable (Encoding ToFields) a, ToRow q) => Connection -> a -> String -> q -> IO Int64
+update con v condition args = do
+    x <- either (error . ("Data.Serialization.Postgresql.update: unable to encode value: " ++)) (return . M.toList) $ encodeRow v
+    execute con (fromString $ "update " ++ table (t v) ++ " set " ++ updates (map fst x) ++ condition) (map snd x ++ toRow args)
+    where
+        t :: a -> Table a
+        t _ = Table
+        updates = intercalate ", " . map (++ " = ?")
+
+-- | Update value
+update_ :: (InTable a, Serializable (Encoding ToFields) a) => Connection -> a -> String -> IO Int64
+update_ con v condition = update con v condition ()
+
+-- | Select value from table
+-- select $ \t -> "select * from "
+select :: (InTable a, Serializable (Decoding FromFields) a, ToRow q) => Connection -> String -> q -> IO [a]
+select con condition args = selectFields con [] condition args
+
+-- | Select value from table
+select_ :: (InTable a, Serializable (Decoding FromFields) a) => Connection -> String -> IO [a]
+select_ con condition = select con condition ()
+
+-- | Select fields from table
+selectFields :: (InTable a, Serializable (Decoding FromFields) a, ToRow q) => Connection -> [String] -> String -> q -> IO [a]
+selectFields con fs condition args = fix $ \r -> do
+    ff <- query con (fromString $ "select " ++ fs' ++ " from " ++ table (t r) ++ condition) args
+    either (error . ("Data.Serialization.Postgresql.select: unable to decode value: " ++)) return $ mapM (decodeRow . fieldsMap) ff
+    where
+        t :: IO [a] -> Table a
+        t _ = Table
+        fs' = if null fs then "*" else intercalate ", " fs
+
+-- | Select fields from table
+selectFields_ :: (InTable a, Serializable (Decoding FromFields) a) => Connection -> [String] -> String -> IO [a]
+selectFields_ con fs condition = selectFields con fs condition ()
+
+fieldsFor :: (Serializable Fields a) => Table a -> Fields a
+fieldsFor _ = fields
 
 -- | Encode row
-encodeRow :: (Serializable (Encoding ToFields) a) => a -> Either String [Action]
-encodeRow x = fmap catMaybes $ encode (ser' x) x where
+encodeRow :: (Serializable (Encoding ToFields) a) => a -> Either String (M.Map String Action)
+encodeRow x = encode (ser' x) x where
     ser' :: (Serializable (Encoding ToFields) a) => a -> Encoding ToFields a
     ser' _ = ser
 
 -- | Decode row
-decodeRow :: (Serializable (Decoding FromFields) a) => [AnyField] -> Either String a
+decodeRow :: (Serializable (Decoding FromFields) a) => M.Map String AnyField -> Either String a
 decodeRow f = fix $ \r -> decode (ser' r) f where
     ser' :: (Serializable (Decoding FromFields) a) => Either String a -> Decoding FromFields a
     ser' _ = ser
 
--- | Collect field names
-newtype Fields a = Fields { fields :: [String] } deriving (Eq, Ord, Read, Show)
+-- | Make @Map@ from field name to field
+fieldsMap :: [AnyField] -> M.Map String AnyField
+fieldsMap = M.fromList . map (maybe "" C8.unpack . name . anyFieldMeta &&& id)
 
-instance Combine Fields where
-    (Fields l) .*. (Fields r) = Fields (l ++ r)
-    (Fields l) .+. (Fields r) = Fields (l ++ r)
-    (Fields m) .:. _ = Fields m
+instance Eq Action where
+    l == r = show l == show r
 
-instance GenericCombine Fields
+-- | Serialize to @Action@
+newtype ToFields a = ToFields { toFields :: ToDictionary String Action a }
+    deriving (Functor, Applicative, Alternative, Monad, MonadError String, Serializer (M.Map String Action), Generic)
 
-instance Selector c => GenericSerializable Fields (Stor c a) where
-    gser = fix $ Fields . return . storName . dummy where
-        dummy :: Fields (Stor c a) -> Stor c a
-        dummy _ = undefined
-
--- | Get type fields
-gfields :: (Generic a, GenIsoDerivable (GenericSerializable Fields) a) => Fields a
-gfields = gser .:. giso
-
--- | Serialize to list of @Action@
-newtype ToFields a = ToFields { toFields :: EncodeTo [Maybe Action] a }
-    deriving (Functor, Applicative, Alternative, Monad, MonadWriter [Maybe Action], MonadError String, Generic)
-
-instance GenericEncode ToFields
-instance Serializer ToFields [Maybe Action]
+instance GenericEncode ToFields where
+    encodeStor name m = ToFields . encodeStor (map toLower name) (toFields . m)
 
 -- | Encode one field
 encodeField :: ToField a => Encoding ToFields a
-encodeField = encodePart $ return . return . Just . toField
+encodeField = Encoding $ ToFields . runEncoding (toEntry "" (Right . toField))
 
 -- | Encode @OptField@
 encodeOptField :: ToField a => Encoding ToFields (OptField a)
-encodeOptField = encodePart $ return . return . opt Nothing Just . fmap toField
+encodeOptField = try encodeField .:. Iso (opt Nothing Just) (maybe HasNo Has)
 
 instance ToField a => Serializable (Encoding ToFields) a where
     ser = encodeField
@@ -133,74 +211,22 @@ instance ToField a => Serializable (Encoding ToFields) (OptField a) where
     ser = encodeOptField
 
 -- | Deserialize from list of @AnyField@
-newtype FromFields a = FromFields { fromFields :: DecodeFrom (Int, [AnyField]) a }
-    deriving (Functor, Applicative, Alternative, Monad, MonadState (Int, [AnyField]), MonadError String, Generic)
+newtype FromFields a = FromFields { fromFields :: FromDictionary String AnyField a }
+    deriving (Functor, Applicative, Alternative, Monad, MonadError String, Deserializer (M.Map String AnyField), Generic)
 
-instance GenericDecode FromFields
-instance Deserializer FromFields [AnyField] where
-    deserialize (FromFields p) s = decodeFrom p (1, s)
-    deserializeEof _ = do
-        (_, fs) <- get
-        when (not $ null fs) $ throwError "EOF expected"
-    deserializeTail = fmap snd get
+instance GenericDecode FromFields where
+    decodeStor name m = FromFields $ decodeStor (map toLower name) (fromFields m)
 
 -- | Decode one field
 decodeField :: FromField a => Decoding FromFields a
-decodeField = Decoding $ do
-    (i, fs) <- get
-    case find ((== i) . tableColumn . anyFieldMeta) fs of
-        Nothing -> throwError $ "Column with index " ++ show i ++ " not found"
-        Just f -> do
-            v <- either throwError return $ fromAny f
-            put (succ i, fs)
-            return v
+decodeField = Decoding $ FromFields $ runDecoding $ fromEntry "" fromAny
 
 -- | Decode @OptField@, field that may not present in query result
 decodeOptField :: FromField a => Decoding FromFields (OptField a)
-decodeOptField = Decoding $ do
-    (i, fs) <- get
-    case find ((== i) . tableColumn . anyFieldMeta) fs of
-        Nothing -> do
-            put (succ i, fs)
-            return HasNo
-        Just f -> do
-            v <- either throwError return $ fromAny f
-            put (succ i, fs)
-            return (Has v)
+decodeOptField = try decodeField .:. Iso (opt Nothing Just) (maybe HasNo Has)
 
 instance FromField a => Serializable (Decoding FromFields) a where
     ser = decodeField
 
 instance FromField a => Serializable (Decoding FromFields) (OptField a) where
     ser = decodeOptField
-
--- | Represents any field
-data AnyField = AnyField {
-    anyFieldMeta :: Field,
-    anyFieldValue :: Maybe ByteString }
-
-instance Show AnyField where
-    show (AnyField f m) = show m
-
-instance Eq AnyField where
-    (AnyField lm lv) == (AnyField rm rv) = and [
-        typename lm == typename rm,
-        tableColumn lm == tableColumn rm,
-        lv == rv]
-
--- | Parse @AnyField@ to concrete type
-fromAny :: (FromField r) => AnyField -> Either String r
-fromAny (AnyField f m) = case fromField f m of
-    Errors e -> Left $ show e
-    Ok x -> Right x
-
-instance FromField AnyField where
-    fromField f m = return $ AnyField f m
-
--- | Optional field, used when field may not present in query
-data OptField a = Has a | HasNo deriving (Eq, Ord, Read, Show, Functor)
-
--- | Fold @OptField@
-opt :: b -> (a -> b) -> OptField a -> b
-opt no _ HasNo = no
-opt _ has (Has x) = has x

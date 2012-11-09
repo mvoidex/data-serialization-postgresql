@@ -1,8 +1,8 @@
 data-serialization-postgresql
 =============================
 
-Simply derive your type from <code>Generic</code>, <code>Decoding FromFields</code> and <code>Encoding ToFields</code>.
-If you want some field not to present in query, use <code>OptField</code> wrapper.
+Simply derive your type from @Generic@, @Decoding FromFields@ and @Encoding ToFields@.
+If you want some field not to present in query, use @OptField@ wrapper.
 
 <pre>
 data Test = Test {
@@ -13,39 +13,47 @@ data Test = Test {
 
 instance Serializable (Decoding FromFields) Test
 instance Serializable (Encoding ToFields) Test
+instance Serializable Fields Test
+instance InTable Test where
+    table _ = "test"
 </pre>
 
-You can collect field names with <code>gfields</code> function:
+Example:
 
 <pre>
-testFields :: [String]
-testFields = fields (gfields :: Fields Test)
--- ["testInt","testOptional","testString"]
-</pre>
-
-Example of usage:
-
-<pre>
-create :: IO ()
-create = do
+runCreate :: IO ()
+runCreate = do
     con &lt;- connect testcon
-    execute_ con "create table test (id integer, value double precision, name text)"
+    execute_ con "drop table test"
+    create con (Table :: Table Test)
     return ()
 
 runInsert :: IO ()
 runInsert = do
     con &lt;- connect testcon
-    let
-        acts = either undefined id $ encodeRow (Test 123 Nothing (Has "Hello, world!"))
-    print acts
-    -- [Plain "123",Plain "null",Escape "Hello, world!"]
-    execute con "insert into test values (?, ?, ?)" acts
+    insert con (Test 1 Nothing (Has "Hello, world!"))
+    insert con (Test 2 (Just 10.0) (Has "Some string"))
+    insert con (Test 3 Nothing HasNo)
+    -- Test {testInt = 1, testOptional = Nothing, testString = Has "Hello, world!"}
+    -- Test {testInt = 2, testOptional = Just 10.0, testString = Has "Some string"}
+    -- Test {testInt = 3, testOptional = Nothing, testString = HasNo}
+    return ()
+
+runUpdate :: IO ()
+runUpdate = do
+    con &lt;- connect testcon
+    -- @Nothing@ is for null, @HasNo@ is for no update
+    update_ con (Test 1 (Just 20.0) HasNo) " where testint = 1"
+    update_ con (Test 2 Nothing (Has "New string")) " where testint = 2"
+    update_ con (Test 3 (Just 30.0) (HasNo)) " where testint = 3"
+    -- Test {testInt = 1, testOptional = Just 20.0, testString = Has "Hello, world!"}
+    -- Test {testInt = 2, testOptional = Nothing, testString = Has "New string"}
+    -- Test {testInt = 3, testOptional = Just 30.0, testString = HasNo}
     return ()
 
 runSelect :: IO ()
 runSelect = do
     con &lt;- connect testcon
-    [ff] &lt;- query_ con "select * from test limit 1"
-    print $ (decodeRow ff :: Either String Test)
-    -- Right (Test {testInt = 123, testOptional = Nothing, testString = Has "Hello, world!"})
+    vs &lt;- select_ con "" :: IO [Test]
+    mapM_ print vs
 </pre>
