@@ -258,6 +258,14 @@ instance (Combine (Encoding ToFields), Combine (Decoding FromFields)) => Combine
     ~(Pgser el dl fl) .+. ~(Pgser er dr fr) = Pgser (el .+. er) (dl .+. dr) (fl .+. fr)
     ~(Pgser e d f) .:. iso = Pgser (e .:. iso) (d .:. iso) (f .:. iso)
 
+instance (CombineM (Encoding ToFields), CombineM (Decoding FromFields)) => CombineM Pgser where
+    ~(Pgser sl dl fl) .|. ~(Pgser sr dr fr) = Pgser (sl .|. sr) (dl .|. dr) (fl .|. fr)
+    ~(Pgser s d fs) .>> f = Pgser (s .>> (pgEncoder . f)) (d .>> (pgDecoder . f)) (fs .>> (pgFields . f))
+    pures v = Pgser (pures v) (pures v) (pures v)
+    fails s = Pgser (fails s) (fails s) (fails s)
+    p .?. ~(Pgser s d f) = Pgser (p .?. s) (p .?. d) (p .?. f)
+    ~(Pgser s d f) .%. e = Pgser (s .%. e) (d .%. e) (f .%. e)
+
 instance (GenericCombine (Encoding ToFields), GenericCombine (Decoding FromFields)) => GenericCombine Pgser where
     genericData s ~(Pgser e d f) = Pgser (genericData s e) (genericData s d) (genericData s f)
     genericCtor s ~(Pgser e d f) = Pgser (genericCtor s e) (genericCtor s d) (genericCtor s f)
@@ -266,7 +274,7 @@ instance (GenericCombine (Encoding ToFields), GenericCombine (Decoding FromField
 instance (ToField a, FromField a, ColumnType a) => Serializable Pgser a where
     ser = Pgser encodeField decodeField ser
 
-instance (ToField a, FromField a, ColumnType (OptField a)) => Serializable Pgser (OptField a) where
+instance (ToField a, FromField a, ColumnType a) => Serializable Pgser (OptField a) where
     ser = Pgser encodeOptField decodeOptField ser
 
 instance Encoder (M.Map String Action) Pgser where

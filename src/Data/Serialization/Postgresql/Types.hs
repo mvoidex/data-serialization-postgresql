@@ -86,6 +86,14 @@ instance Combine Fields where
     (Fields l) .+. (Fields r) = Fields (l ++ r)
     (Fields f) .:. _ = Fields f
 
+instance CombineM Fields where
+    (Fields l) .|. (Fields r) = Fields (l ++ r)
+    (Fields fs) .>> f = Fields fs
+    pures _ = Fields []
+    fails _ = Fields []
+    p .?. (Fields fs) = Fields fs
+    (Fields fs) .%. _ = Fields fs
+
 instance GenericCombine Fields where
     genericStor name (Fields (("", tp):fs)) = Fields $ (name, tp) : fs
     genericStor _ _ = error "Impossible happened"
