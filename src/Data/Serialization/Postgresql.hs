@@ -224,6 +224,9 @@ instance ToField a => Serializable (Encoding ToFields) a where
 instance ToField a => Serializable (Encoding ToFields) (OptField a) where
     ser = encodeOptField
 
+instance (Selector c, Serializable (Encoding ToFields) a) => GenericSerializable (Encoding ToFields) (Stor c (Parent a)) where
+    gser = ser .:. Iso (parent . unStor) (Stor . Parent)
+
 -- | Deserialize from list of @AnyField@
 newtype FromFields a = FromFields { fromFields :: FromDictionary String AnyField a }
     deriving (Functor, Applicative, Alternative, Monad, MonadError String, Deserializer (M.Map String AnyField), Generic)
@@ -244,6 +247,9 @@ instance FromField a => Serializable (Decoding FromFields) a where
 
 instance FromField a => Serializable (Decoding FromFields) (OptField a) where
     ser = decodeOptField
+
+instance (Selector c, Serializable (Decoding FromFields) a) => GenericSerializable (Decoding FromFields) (Stor c (Parent a)) where
+    gser = ser .:. Iso (parent . unStor) (Stor . Parent)
 
 data Pgser a = Pgser {
     pgEncoder :: Encoding ToFields a,
@@ -271,9 +277,6 @@ instance (GenericCombine (Encoding ToFields), GenericCombine (Decoding FromField
     genericData s ~(Pgser e d f) = Pgser (genericData s e) (genericData s d) (genericData s f)
     genericCtor s ~(Pgser e d f) = Pgser (genericCtor s e) (genericCtor s d) (genericCtor s f)
     genericStor s ~(Pgser e d f) = Pgser (genericStor s e) (genericStor s d) (genericStor s f)
-
-instance (Selector c, Serializable Pgser a) => GenericSerializable Pgser (Stor c (Parent a)) where
-    gser = ser .:. Iso (parent . unStor) (Stor . Parent)
 
 instance (ToField a, FromField a, ColumnType a) => Serializable Pgser a where
     ser = Pgser encodeField decodeField ser
