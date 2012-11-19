@@ -68,7 +68,6 @@
 --
 module Data.Serialization.Postgresql (
     -- * Queries
-    InTable(..), Table(..),
     create,
     insert,
     update, update_,
@@ -97,7 +96,8 @@ import Control.Monad.Writer
 
 import Data.Char
 import Data.List (intercalate)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (mapMaybe, fromMaybe)
+import Data.Either (lefts, rights)
 import Data.String
 import Data.Int
 import Data.Function (fix)
@@ -119,18 +119,19 @@ import Data.Serialization.Dictionary
 
 import Data.Serialization.Postgresql.Types
 
-class InTable a where
-    table :: Table a -> String
-
-data Table a = Table
-
 -- | Create table
 --
 -- >create con (Table "test" :: Table Test)
 --
 create :: (InTable a, Serializable Pgser a) => Connection -> Table a -> IO Int64
-create con t = execute_ con $ fromString $ "create table " ++ table t ++ " (" ++ fs ++ ")" where
-    fs = intercalate ", " $ map cat $ getFields (fieldsFor t)
+create con t = execute_ con $ fromString $ "create table " ++ table t ++ " (" ++ fs ++ ")" ++ inherits where
+    fs = intercalate ", " $ map cat $ mapMaybe toFld flds
+    inherits = if null inhs then "" else " inherits (" ++ intercalate ", " inhs ++ ")"
+    inhs = rights $ map snd flds
+
+    toFld (n, Left t) = Just (n, t)
+    toFld _ = Nothing
+    flds = getFields (fieldsFor t)
     cat (nm, tp) = nm ++ " " ++ tp
 
 -- | Insert value into table
@@ -270,6 +271,9 @@ instance (GenericCombine (Encoding ToFields), GenericCombine (Decoding FromField
     genericData s ~(Pgser e d f) = Pgser (genericData s e) (genericData s d) (genericData s f)
     genericCtor s ~(Pgser e d f) = Pgser (genericCtor s e) (genericCtor s d) (genericCtor s f)
     genericStor s ~(Pgser e d f) = Pgser (genericStor s e) (genericStor s d) (genericStor s f)
+
+instance (Selector c, Serializable Pgser a) => GenericSerializable Pgser (Stor c (Parent a)) where
+    gser = ser .:. Iso (parent . unStor) (Stor . Parent)
 
 instance (ToField a, FromField a, ColumnType a) => Serializable Pgser a where
     ser = Pgser encodeField decodeField ser

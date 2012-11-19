@@ -3,6 +3,8 @@
 module Data.Serialization.Postgresql.Types (
     ColumnType(..),
     Fields(..),
+    InTable(..), Table(..),
+    Parent(..),
     -- * Utiliity
     AnyField(..), OptField(..),
     fromAny, opt
@@ -79,7 +81,7 @@ instance ColumnType a => ColumnType (OptField a) where
     columnType = columnType . opt undefined id
 
 -- | Metadata collector
-data Fields a = Fields { getFields :: [(String, String)] } deriving (Eq, Ord, Read, Show)
+data Fields a = Fields { getFields :: [(String, Either String String)] } deriving (Eq, Ord, Read, Show)
 
 instance Combine Fields where
     (Fields l) .*. (Fields r) = Fields (l ++ r)
@@ -99,9 +101,23 @@ instance GenericCombine Fields where
     genericStor _ _ = error "Impossible happened"
 
 instance ColumnType a => Serializable Fields a where
-    ser = fix $ \r -> Fields [("", columnType $ dummy r)] where
+    ser = fix $ \r -> Fields [("", Left $ columnType $ dummy r)] where
         dummy :: Fields a -> a
         dummy _ = undefined
+
+instance InTable a => Serializable Fields (Parent a) where
+    ser = fix $ \r -> Fields [("", Right $ table $ dummy r)] where
+        dummy :: Fields (Parent a) -> Table a
+        dummy _ = Table
+
+class InTable a where
+    table :: Table a -> String
+
+data Table a = Table
+
+-- | Parent table
+data Parent a = Parent {
+    parent :: a }
 
 -- | Represents any field
 data AnyField = AnyField {
