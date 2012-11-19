@@ -284,6 +284,9 @@ instance (ToField a, FromField a, ColumnType a) => Serializable Pgser a where
 instance (ToField a, FromField a, ColumnType a) => Serializable Pgser (OptField a) where
     ser = Pgser encodeOptField decodeOptField ser
 
+instance (InTable a, Serializable Pgser a) => Serializable Pgser (Parent a) where
+    ser = Pgser (pgEncoder ser .:. Iso parent Parent) (pgDecoder ser .:. Iso parent Parent) ser
+
 instance Encoder (M.Map String Action) Pgser where
     encode (Pgser e _ _) = encode e
 
