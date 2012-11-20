@@ -68,7 +68,7 @@
 --
 module Data.Serialization.Postgresql (
     -- * Queries
-    create,
+    create, createIfNot,
     insert,
     update, update_,
     select, select_,
@@ -124,7 +124,14 @@ import Data.Serialization.Postgresql.Types
 -- >create con (Table "test" :: Table Test)
 --
 create :: (InTable a, Serializable Pgser a) => Connection -> Table a -> IO Int64
-create con t = execute_ con $ fromString $ "create table " ++ table t ++ " (" ++ fs ++ ")" ++ inherits where
+create = createCommand "create table"
+
+-- | Create table if not exists
+createIfNot :: (InTable a, Serializable Pgser a) => Connection -> Table a -> IO Int64
+createIfNot = createCommand "create table if not exists"
+
+createCommand :: (InTable a, Serializable Pgser a) => String -> Connection -> Table a -> IO Int64
+createCommand str con t = execute_ con $ fromString $ str ++ " " ++ table t ++ " (" ++ fs ++ ")" ++ inherits where
     fs = intercalate ", " $ map cat $ mapMaybe toFld flds
     inherits = if null inhs then "" else " inherits (" ++ intercalate ", " inhs ++ ")"
     inhs = rights $ map snd flds
